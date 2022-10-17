@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"os"
@@ -13,7 +12,18 @@ import (
 
 func main() {
 
-	conn, err := net.Dial("tcp", "localhost:8080")
+	serverAddr := net.TCPAddr{
+		IP:   nil,
+		Port: 8080,
+		Zone: "",
+	}
+
+	clientAddr := net.TCPAddr{
+		IP:   nil,
+		Port: 1234,
+		Zone: "",
+	}
+	conn, err := net.DialTCP("tcp", &clientAddr, &serverAddr)
 	if err != nil {
 		fmt.Println("Can not connect to the server: ", err.Error())
 		os.Exit(-1)
@@ -25,7 +35,10 @@ func main() {
 		if err != nil {
 			log.Println(err.Error())
 		}
-		sendToServer(conn, str)
+		err = sendToServer(conn, str)
+		if err != nil {
+			continue
+		}
 		getFromServer(conn)
 
 	}
@@ -34,20 +47,25 @@ func main() {
 
 func getFromServer(conn net.Conn) {
 
+	bytes := make([]byte, 1024)
+	conn.Read(bytes)
+	fmt.Println(string(bytes))
 }
 
-func sendToServer(conn net.Conn, str string) {
+func sendToServer(conn net.Conn, str string) error {
 	str = strings.Trim(str, "\r\n")
 	args := strings.Fields(str)
 
 	switch args[0] {
 	case "ECHO":
-		_, err := conn.Write([]byte(str))
+		buffer := utils.CreateTcpBuffer([]byte(str))
+		_, err := conn.Write(buffer)
 		if err != nil {
 			fmt.Println(err)
 		}
 	case "TIME":
-		_, err := conn.Write([]byte(args[0]))
+		buffer := utils.CreateTcpBuffer([]byte(args[0]))
+		_, err := conn.Write(buffer)
 		if err != nil {
 			fmt.Println(err)
 		}
@@ -62,20 +80,13 @@ func sendToServer(conn net.Conn, str string) {
 			fmt.Println(err)
 		}
 	case "UPLOAD":
-		file, err := os.Open(args[1])
+		all, err := os.ReadFile(args[1])
 		if err != nil {
 			fmt.Println(err)
 		}
-		defer file.Close()
-		all, err := io.ReadAll(file)
-		if err != nil {
-			fmt.Println(err)
-		}
-		buffer := utils.CreateTcpBuffer(all)
-		_, err = conn.Write([]byte(str))
-		if err != nil {
-			fmt.Println(err)
-		}
+		buffer := []byte(args[0] + " " + args[1] + " ")
+		buffer = append(buffer, all...)
+		buffer = utils.CreateTcpBuffer(buffer)
 		write, err := conn.Write(buffer)
 		if err != nil {
 			fmt.Println(err)
@@ -85,5 +96,7 @@ func sendToServer(conn net.Conn, str string) {
 		}
 	default:
 		fmt.Println("Unknown command,try again")
+		return error(nil)
 	}
+	return nil
 }
