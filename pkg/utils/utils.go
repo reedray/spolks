@@ -2,12 +2,15 @@ package utils
 
 import (
 	"encoding/binary"
-	"spolks/internal/models"
+	"errors"
+	"fmt"
+	"io"
+	"net"
 	"spolks/pkg/constants"
-	"strings"
+	"syscall"
 )
 
-func CreateTcpBuffer(data []byte) []byte {
+func CreateBuffer(data []byte) []byte {
 	// Create a buffer with size enough to hold a prefix and actual data
 	buf := make([]byte, constants.PrefixSize+len(data))
 
@@ -20,38 +23,22 @@ func CreateTcpBuffer(data []byte) []byte {
 	return buf
 }
 
-func CreateMsg(b []byte) models.Msg {
-	s := string(b)
+func ReadData(conn net.Conn) ([]byte, error) {
+	prefix := make([]byte, constants.PrefixSize)
+	_, err := io.ReadFull(conn, prefix)
+	if err != nil {
+		return nil, err
+	}
 
-	msg := models.Msg{}
+	totalDataLength := binary.BigEndian.Uint32(prefix[:])
+	data := make([]byte, totalDataLength-constants.PrefixSize)
+	_, err = io.ReadFull(conn, data)
+	if err != nil {
+		if errors.Is(err, syscall.ECONNRESET) {
+			fmt.Println("Connection closed")
 
-	if strings.HasPrefix(s, constants.ECHO) {
-		msg.Cmd = constants.ECHO
-		s = s[len(constants.ECHO)+1:]
-		buf := make([]byte, len(s))
-		buf = []byte(s)
-		msg.Data = &buf
+		}
+		return nil, err
 	}
-	if strings.HasPrefix(s, constants.TIME) {
-		msg.Cmd = constants.TIME
-	}
-	if strings.HasPrefix(s, constants.CLOSE) {
-		msg.Cmd = constants.CLOSE
-	}
-	if strings.HasPrefix(s, constants.DOWNLOAD) {
-		msg.Cmd = constants.DOWNLOAD
-		args := strings.Fields(s)
-		msg.Filename = &args[1]
-	}
-	if strings.HasPrefix(s, constants.UPLOAD) {
-		msg.Cmd = constants.UPLOAD
-		args := strings.Fields(s)
-		msg.Filename = &args[1]
-		s = s[len(constants.UPLOAD)+len(args[1])+2:] //+2 for spaces for cmd and filename
-		bytes := make([]byte, len(s))
-		bytes = []byte(s)
-		msg.Data = &bytes
-	}
-	return msg
-
+	return data, nil
 }

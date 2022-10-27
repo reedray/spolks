@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -46,81 +47,82 @@ func (t *TCPServer) handleConnection(conn net.Conn) {
 	fmt.Println(conn.RemoteAddr(), " connected")
 	defer fmt.Println(conn.RemoteAddr(), "disconnected")
 	defer conn.Close()
-	for {
-		prefix := make([]byte, constants.PrefixSize)
-		_, err := io.ReadFull(conn, prefix)
-		if err != nil {
-			break
-		}
+	//
 
-		totalDataLength := binary.BigEndian.Uint32(prefix[:])
-		data := make([]byte, totalDataLength-constants.PrefixSize)
-		_, err = io.ReadFull(conn, data)
-		if err != nil {
-			if errors.Is(err, syscall.ECONNRESET) {
-				fmt.Println("Connection closed")
+	if val, ok := t.sessions[conn.RemoteAddr().String()]; ok {
+		switch val.Cmd {
+		case constants.DOWNLOAD:
+			fileInfo, _ := os.Stat(val.Filename)
+			toSend := int(fileInfo.Size()) - val.BytesProcessed
+			bytes, err := os.ReadFile(val.Filename)
+			if err != nil {
+				return
+			}
+			bytes = bytes[toSend:]
+			conn.Write(bytes)
+		case constants.UPLOAD:
+			syn := models.SYN{
+				Filename:       val.Filename,
+				BytesProcessed: val.BytesProcessed,
+				NeedRestore:    true,
+			}
+			bytes, _ := json.Marshal(syn)
+			conn.Write(bytes)
+
+			prefix := make([]byte, constants.PrefixSize)
+			_, err := io.ReadFull(conn, prefix)
+			if err != nil {
 				break
 			}
-		}
-		msg := utils.CreateMsg(data)
 
-		if val, ok := t.sessions[conn.RemoteAddr().String()]; ok {
-			if val.Cmd == msg.Cmd && *val.Filename == *msg.Filename {
-				err := t.createResponse(conn, val)
-				if err != nil {
-					fmt.Println(err)
-					conn.Write([]byte(err.Error()))
-					continue
+			totalDataLength := binary.BigEndian.Uint32(prefix[:])
+			data := make([]byte, totalDataLength-constants.PrefixSize)
+			_, err = io.ReadFull(conn, data)
+			if err != nil {
+				if errors.Is(err, syscall.ECONNRESET) {
+					fmt.Println("Connection closed")
+					break
 				}
-				fmt.Println("RESTORED SESSION FOR:", conn.RemoteAddr())
-				delete(t.sessions, conn.RemoteAddr().String())
+			}
+			file, err := os.OpenFile("upload_"+val.Filename, os.O_APPEND|os.O_WRONLY, 666)
+			defer file.Close()
+			if err != nil {
+				fmt.Println(err)
+			}
+			_, err = file.Write(data)
+			if err != nil {
+				fmt.Println(err)
 			}
 		}
+		delete(t.sessions, conn.RemoteAddr().String())
+		fmt.Println("Restored session for: ", conn.RemoteAddr())
+	} else {
+		bytes, err := json.Marshal(models.SYN{})
+		if err != nil {
+			return
+		}
+		conn.Write(bytes)
+	}
+	for {
 
-		err = t.createResponse(conn, msg)
+		msg := models.Msg{}
+		err := json.NewDecoder(conn).Decode(&msg)
 		if err != nil {
 			fmt.Println(err)
-			conn.Write([]byte(err.Error()))
-			conn.Close()
+			break
 		}
-	}
-
-}
-
-func (t *TCPServer) createResponse(conn net.Conn, msg models.Msg) error {
-	switch msg.Cmd {
-	case constants.ECHO:
-		conn.Write(*msg.Data)
-	case constants.TIME:
-		now := time.Now().String()
-		conn.Write([]byte(now))
-	case constants.CLOSE:
-		conn.Write([]byte("Connection closed"))
-		conn.Close()
-	case constants.DOWNLOAD:
-		i := simulateErr()
-		if i < 3 {
-			t.sessions[conn.RemoteAddr().String()] = msg
-			return errors.New("Network error")
-		}
-		bytes, err := os.ReadFile(*msg.Filename)
+		//fmt.Println(time.Since(msg.MsgTime))
+		//bitrate := float64(len(msg.Data)) / float64(time.Since(msg.MsgTime).Milliseconds())
+		//fmt.Printf("bitrate: %f Mbps", bitrate)
+		err = t.sendResponse(conn, msg)
 		if err != nil {
-			conn.Write([]byte("No such file on a server"))
-			return err
+			fmt.Println(err)
+			buf := utils.CreateBuffer([]byte(err.Error()))
+			conn.Write(buf)
+			break
 		}
-		bytes = utils.CreateTcpBuffer(bytes)
-		conn.Write(bytes)
-	case constants.UPLOAD:
-		i := simulateErr()
-		if i < 6 {
-			t.sessions[conn.RemoteAddr().String()] = msg
-			return errors.New("Network error")
-		}
-		file, _ := os.Create(*msg.Filename)
-		file.Write(*msg.Data)
-		conn.Write([]byte("File created"))
 	}
-	return nil
+
 }
 
 func simulateErr() int {
@@ -139,4 +141,52 @@ func (t *TCPServer) Shutdown() {
 	}
 	os.Exit(0)
 
+}
+
+func (t *TCPServer) sendResponse(conn net.Conn, msg models.Msg) error {
+	switch msg.Cmd {
+	case constants.ECHO:
+		buf := utils.CreateBuffer(msg.Data)
+		conn.Write(buf)
+	case constants.TIME:
+		buf := utils.CreateBuffer([]byte(time.Now().String()))
+		conn.Write(buf)
+	case constants.CLOSE:
+		buf := utils.CreateBuffer([]byte("Connection closed"))
+		conn.Write(buf)
+		conn.Close()
+	case constants.DOWNLOAD:
+		bytes, err := os.ReadFile(msg.Filename)
+		if err != nil {
+			return err
+		}
+		i := simulateErr()
+		if i < 4 {
+			msg.Data = msg.Data[:len(msg.Data)/2]
+			msg.BytesProcessed = len(msg.Data) / 2
+			t.sessions[conn.RemoteAddr().String()] = msg
+			buffer := utils.CreateBuffer(bytes)
+			conn.Write(buffer)
+			return errors.New("Network error")
+		}
+		buffer := utils.CreateBuffer(bytes)
+		conn.Write(buffer)
+	case constants.UPLOAD:
+		bitrate := float64(len(msg.Data)) / float64(time.Since(msg.MsgTime).Milliseconds())
+		fmt.Printf("bitrate: %f Bpms\n", bitrate)
+		file, err := os.OpenFile("upload_"+msg.Filename, os.O_RDWR|os.O_CREATE, 0666)
+		if err != nil {
+			fmt.Println(err)
+		}
+		defer file.Close()
+		i := simulateErr()
+		if i < 9 {
+			file.Write(msg.Data[:len(msg.Data)/2])
+			msg.BytesProcessed = len(msg.Data) / 2
+			t.sessions[conn.RemoteAddr().String()] = msg
+			return errors.New("Network error")
+		}
+		file.Write(msg.Data)
+	}
+	return nil
 }
