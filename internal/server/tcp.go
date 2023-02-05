@@ -20,6 +20,7 @@ type TCPServer struct {
 	addr     string
 	server   net.Listener
 	sessions map[string]models.Msg
+	queue    chan int
 }
 
 func (t *TCPServer) Start() (err error) {
@@ -34,11 +35,19 @@ func (t *TCPServer) Start() (err error) {
 
 		conn, err := t.server.Accept()
 		if err != nil {
-			//errors.Is(err)
 			fmt.Println(err)
 			break
 		}
-		go t.handleConnection(conn)
+
+		select {
+		case t.queue <- 1:
+			fmt.Println("Started new thread")
+			go t.handleConnection(conn)
+		default:
+			fmt.Println("Pool is full!", conn.RemoteAddr(), "can`t be added to the pool,disconnecting")
+			conn.Close()
+		}
+
 	}
 	return nil
 }
@@ -49,6 +58,13 @@ func (t *TCPServer) handleConnection(conn net.Conn) {
 	defer conn.Close()
 	//
 
+	defer func() {
+		fmt.Println("Thread removed from pool")
+		<-t.queue
+	}()
+	defer func() {
+		<-t.queue
+	}()
 	if val, ok := t.sessions[conn.RemoteAddr().String()]; ok {
 		switch val.Cmd {
 		case constants.DOWNLOAD:
@@ -104,7 +120,6 @@ func (t *TCPServer) handleConnection(conn net.Conn) {
 		conn.Write(bytes)
 	}
 	for {
-
 		msg := models.Msg{}
 		err := json.NewDecoder(conn).Decode(&msg)
 		if err != nil {

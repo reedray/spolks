@@ -19,7 +19,7 @@ func main() {
 
 	serverAddr, err := net.ResolveTCPAddr("tcp", ":8080")
 
-	clientAddr, err := net.ResolveTCPAddr("tcp", "0.0.0.0:1234")
+	clientAddr, err := net.ResolveTCPAddr("tcp", "0.0.0.0:0")
 	if err != nil {
 		fmt.Println(err)
 	}

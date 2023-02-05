@@ -6,6 +6,8 @@ import (
 	"strings"
 )
 
+const maxCons = 2
+
 type Server interface {
 	Start() error
 	Shutdown()
@@ -17,6 +19,7 @@ func NewServer(protocol, addr string) Server {
 		return &TCPServer{
 			addr:     addr,
 			sessions: make(map[string]models.Msg),
+			queue:    make(chan int, maxCons),
 		}
 	case "udp":
 		return &UDPServer{
